@@ -122,23 +122,31 @@ def load_recommendations_df():
         st.error(f"Error loading recommendations: {e}")
         return pd.DataFrame(columns=['food_name', 'sodium_mg'])
 
-def predict_food_from_image(uploaded_file, model):
+def process_image(img_data):
+    """
+    Process image data for prediction
+    
+    Parameters:
+    img_data: Image data as bytes or file-like object
+    
+    Returns:
+    tuple: (processed_img_array, Image object)
+    """
     try:
-        # Convert the uploaded file to an image
-        img = Image.open(uploaded_file).convert('RGB')
-        img = img.resize((224, 224))
-        img_array = np.array(img) / 255.0  # Normalize
+        # Convert to PIL Image
+        img = Image.open(img_data).convert('RGB')
+        
+        # Resize for model
+        img_resized = img.resize((224, 224))
+        
+        # Normalize and prepare for model
+        img_array = np.array(img_resized) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
         
-        # Make prediction
-        predictions = model(img_array, training=False)
-        predicted_class_index = np.argmax(predictions.numpy()[0])
-
-        predicted_food = class_labels.get(predicted_class_index, "Unknown Food")
-        return predicted_food
+        return img_array, img
     except Exception as e:
-        st.error(f"Error in image processing: {e}")
-        return "Error"
+        st.error(f"Error processing image: {e}")
+        return None, None
 
 def get_nutrition_data(food_name, api_key):
     url = "https://api.nal.usda.gov/fdc/v1/foods/search"
@@ -314,6 +322,14 @@ def display_nutrition_data(nutrition_data):
 def main():
     st.set_page_config(page_title="SmartSpoon - Food Analyzer", layout="wide")
     
+    # Initialize session state for feedback
+    if 'feedback_submitted' not in st.session_state:
+        st.session_state.feedback_submitted = False
+    
+    # Initialize session state for image data
+    if 'uploaded_image' not in st.session_state:
+        st.session_state.uploaded_image = None
+    
     # Application title
     st.title("**Smart Food Analyzer**")
     st.write("Upload a food image to get predictions, nutrition info, and recommendations!")
@@ -327,69 +343,99 @@ def main():
     api_key = "u7bvXwyQMdTaLmMGz1Cr72JZMucTr5rjGEPEbhsi"
     
     # File uploader
-    uploaded_file = st.file_uploader("Choose a food image...", type=["jpg", "jpeg", "png"])
+    uploaded_file = st.file_uploader("Choose a food image...", type=["jpg", "jpeg", "png"], key="food_image")
     
+    # Store uploaded file in session state
     if uploaded_file is not None:
+        # Read file bytes once to avoid issues with file handle
+        file_bytes = uploaded_file.getvalue()
+        st.session_state.uploaded_image = file_bytes
+    
+    # Process the image if available
+    if st.session_state.uploaded_image is not None:
+        # Convert bytes back to file-like object for display and processing
+        img_bytes_io = io.BytesIO(st.session_state.uploaded_image)
+        
         # Display the image
         col1, col2 = st.columns([1, 2])
         
         with col1:
-            st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
+            st.image(img_bytes_io, caption="Uploaded Image", use_container_width=True)
+            # Reset the position to start
+            img_bytes_io.seek(0)
         
         with col2:
-            # Predict food
-            predicted_food = predict_food_from_image(uploaded_file, model)
+            # Process image for prediction
+            img_array, _ = process_image(img_bytes_io)
             
-            if predicted_food != "Error" and predicted_food != "Unknown Food":
-                st.success(f"**Predicted Food**: {predicted_food}")
-                
-                # Get nutrition data
-                nutrition_data = get_nutrition_data(predicted_food, api_key)
-                
-                # Get recommendations
-                sodium_status, recommendations = recommend_alternative(nutrition_data, df)
-                
-                # Display nutrition data in expandable section
-                with st.expander("📊 View Nutrition Data", expanded=True):
-                    display_nutrition_data(nutrition_data)
-                
-                # Display recommendations
-                with st.expander("🍽️ Recommendations", expanded=True):
-                    st.info(f"**{sodium_status}**:")
-                    for i, rec in enumerate(recommendations, 1):
-                        st.write(f"{i}. {rec}")
-                
-                # User review - MODIFIED to focus on recommendations feedback
-                st.subheader("Feedback on Recommendations")
-                user_review = st.text_area("What do you think about the recommended alternatives?", height=100)
-                
-                if st.button("Submit Feedback"):
-                    if user_review:
-                        # Analyze sentiment
-                        sentiment = analyze_sentiment(user_review, sentiment_system)
+            if img_array is not None:
+                # Make prediction
+                try:
+                    predictions = model(img_array, training=False)
+                    predicted_class_index = np.argmax(predictions.numpy()[0])
+                    predicted_food = class_labels.get(predicted_class_index, "Unknown Food")
+                    
+                    if predicted_food != "Unknown Food":
+                        st.success(f"**Predicted Food**: {predicted_food}")
                         
-                        # Display sentiment with appropriate color
-                        if sentiment == "Positive":
-                            st.success(f"**Feedback Sentiment**: {sentiment}")
-                        elif sentiment == "Negative":
-                            st.error(f"**Feedback Sentiment**: {sentiment}")
-                        else:
-                            st.info(f"**Feedback Sentiment**: {sentiment}")
+                        # Get nutrition data
+                        nutrition_data = get_nutrition_data(predicted_food, api_key)
                         
-                        # Find similar reviews about recommendations
-                        similar_reviews = find_similar_reviews(user_review, sentiment)
+                        # Get recommendations
+                        sodium_status, recommendations = recommend_alternative(nutrition_data, df)
                         
-                        # Display similar reviews
-                        with st.expander("🔍 Similar Feedback on Recommendations", expanded=True):
-                            for review in similar_reviews:
-                                st.write(f"- {review}")
+                        # Display nutrition data in expandable section
+                        with st.expander("📊 View Nutrition Data", expanded=True):
+                            display_nutrition_data(nutrition_data)
+                        
+                        # Display recommendations
+                        with st.expander("🍽️ Recommendations", expanded=True):
+                            st.info(f"**{sodium_status}**:")
+                            if recommendations:
+                                for i, rec in enumerate(recommendations, 1):
+                                    st.write(f"{i}. {rec}")
+                            else:
+                                st.write("No specific recommendations available.")
+                        
+                        # User review - MODIFIED to focus on recommendations feedback
+                        st.subheader("Feedback on Recommendations")
+                        user_review = st.text_area("What do you think about the recommended alternatives?", height=100)
+                        
+                        # Submit button with callback
+                        if st.button("Submit Feedback"):
+                            if user_review:
+                                # Analyze sentiment
+                                sentiment = analyze_sentiment(user_review, sentiment_system)
                                 
-                        # Thank user for feedback
-                        st.success("Thank you for your feedback on our recommendations! This helps us improve our suggestions.")
+                                # Display sentiment with appropriate color
+                                if sentiment == "Positive":
+                                    st.success(f"**Feedback Sentiment**: {sentiment}")
+                                elif sentiment == "Negative":
+                                    st.error(f"**Feedback Sentiment**: {sentiment}")
+                                else:
+                                    st.info(f"**Feedback Sentiment**: {sentiment}")
+                                
+                                # Find similar reviews about recommendations
+                                similar_reviews = find_similar_reviews(user_review, sentiment)
+                                
+                                # Display similar reviews
+                                with st.expander("🔍 Similar Feedback on Recommendations", expanded=True):
+                                    for review in similar_reviews:
+                                        st.write(f"- {review}")
+                                        
+                                # Thank user for feedback
+                                st.success("Thank you for your feedback on our recommendations! This helps us improve our suggestions.")
+                                
+                                # Mark feedback as submitted in session state
+                                st.session_state.feedback_submitted = True
+                            else:
+                                st.warning("Please enter your feedback before submitting.")
                     else:
-                        st.warning("Please enter your feedback before submitting.")
+                        st.error(f"Could not identify the food in this image.")
+                except Exception as e:
+                    st.error(f"Error during prediction: {e}")
             else:
-                st.error(f"Could not identify the food in this image.")
+                st.error("There was an error processing the image.")
 
 if __name__ == "__main__":
     main()
