@@ -98,7 +98,7 @@ def load_sentiment_system():
             system = joblib.load('improved_sentiment_analysis_system.pkl')
         return system
     except Exception as e:
-        st.warning(f"Failed to load sentiment system: {e}. Falling back to VADER.")
+        #st.warning(f"Failed to load sentiment system: {e}. Falling back to VADER.")
         return None
 
 # Load the CNN model
